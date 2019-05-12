@@ -1,0 +1,53 @@
+-- PureShader TestCode
+
+type GlslType glsltypename :: String -> * =
+  {#- BUILTIN PARSED TYPE: GLSL TYPE MAPPING -#}
+type BuiltinVariableSetterM stage :: ShaderStage -> * =
+  {#- BUILTIN PARSED TYPE: GLSL BUILTIN VARYING SETTER PROVIDER MONAD -#}
+type DescriptorInput descritptor_set_types :: [[*]] -> * =
+  {#- BUILTIN PARSED TYPE: DESCRIPTOR INPUT SETS(1ST POSITION) AND BINDINGS(2ND POSITION) -#}
+
+type Matrix4 = GlslType "mat4"
+type Matrix3 = GlslType "mat3"
+type Float4 = GlslType "vec4"
+type Float3 = GlslType "vec3"
+type Float2 = GlslType "vec2"
+type Float = GlslType "float"
+type Int = GlslType "int"
+type Sampler2D = GlslType "sampler2D"
+
+foreign import ccall mat3 :: Matrix4 -> Matrix3 = "mat3"
+foreign import ccall vec4_fromv3 :: Float3 -> Float4 = "vec4"
+foreign import ccall texture2D :: Sampler2D -> Float2 -> Float4 = "texture2D"
+{#- `coerce_xyz_4` must be declared in linking code -#}
+foreign import ccall xyz4 :: Float4 -> Float3 = "coerce_xyz_4"
+
+class VectorCoerce4 a where
+  xyz :: a -> Vector3
+
+instance VectorCoerce4 Float4 where
+  xyz :: Float4 -> Vector3 = xyz4
+
+data ShaderStage = VertexShader | FragmentShader | ComputeShader | GeometryShader |
+  TessellationEvaluationShader | TessellationControlShader
+type VertexShaderProcess = BuiltinVariableSetterM VertexShader
+type FragmentSHaderProcess = BuiltinVariableSetterM FragmentShader
+
+data VshInputs = VshInputs { position :: Float3, normal :: Float3, uv :: Float2 }
+data ExtVshOutputs = ExtVshOutputs { lambert: Float, uv: Float2 }
+
+data CameraSettings = CameraSettings { proj_matrix :: Matrix4 }
+
+vsh_main :: VshInputs -> DescriptorInput [[CameraSettings]] -> VertexShaderProcess ExtVshOutputs
+vsh_main (VshInputs { position, normal, uv }) [[camera]] = do
+  setPosition $ (transpose $ proj_matrix camera) position
+  let lambert = dot ((mat3 $ proj_matrix camera) * normal) $ negate position
+  return $ ExtVshOutputs { lambert = lambert, uv = uv }
+
+fsh_main :: VertexShaderProcess ExtVshOutpus -> DescriptorInput [[Sampler2D]] -> FragmentShaderProcess ()
+fsh_main vsh [[tex]] = let tc = texture2D tex $ uv $ get vsh in do
+  setTargetColor 0 (texture2D tex (uv $ get vsh))
+  setTargetColor $ processColor <$> getTargetColor
+  where
+    processColor :: Float4 -> Float4
+    processColor tc = let col_rgb = xyz c * (lambert $ get vsh) in (vec4_fromv3 col_rgb 1.0) * a c
