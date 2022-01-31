@@ -1,53 +1,91 @@
 -- PureShader TestCode
 
-type GlslType glsltypename :: String -> * =
-  {#- BUILTIN PARSED TYPE: GLSL TYPE MAPPING -#}
-type BuiltinVariableSetterM stage :: ShaderStage -> * =
+{-
+type ShaderM stage params output :: ShaderStage -> * -> * -> * =
   {#- BUILTIN PARSED TYPE: GLSL BUILTIN VARYING SETTER PROVIDER MONAD -#}
-type DescriptorInput descritptor_set_types :: [[*]] -> * =
-  {#- BUILTIN PARSED TYPE: DESCRIPTOR INPUT SETS(1ST POSITION) AND BINDINGS(2ND POSITION) -#}
+type Uniform t :: * -> * = {#- BUILTIN TYPE: Uniform Descriptor input signature -#}
+type Sampler2D :: * = {#- BUILTIN TYPE: Sampler2D Descriptor input signature -#}
+-}
 
-type Matrix4 = GlslType "mat4"
-type Matrix3 = GlslType "mat3"
-type Float4 = GlslType "vec4"
-type Float3 = GlslType "vec3"
-type Float2 = GlslType "vec2"
-type Float = GlslType "float"
-type Int = GlslType "int"
-type Sampler2D = GlslType "sampler2D"
+type Float4 = Vector4 Float
+type Float3 = Vector3 Float
 
-foreign import ccall mat3 :: Matrix4 -> Matrix3 = "mat3"
-foreign import ccall vec4_fromv3 :: Float3 -> Float4 = "vec4"
-foreign import ccall texture2D :: Sampler2D -> Float2 -> Float4 = "texture2D"
-{#- `coerce_xyz_4` must be declared in linking code -#}
-foreign import ccall xyz4 :: Float4 -> Float3 = "coerce_xyz_4"
+foreign import ccall "mat3" mat3 :: Matrix4 -> Matrix3
+foreign import ccall "vec4" vec4_fromv3 :: Float3 -> Float4
+foreign import ccall "texture2D" texture2D :: Sampler2D -> Float2 -> Float4
+{- `coerce_xyz_4` must be declared in linking code -}
+foreign import ccall "coerce_xyz_4" xyz4 :: Float4 -> Float3
+
+(.) :: (b -> c) -> (a -> b) -> a -> c
+f . g = \x -> f (g x)
 
 class VectorCoerce4 a where
-  xyz :: a -> Vector3
+  xyz :: Vector4 a -> Vector3 a
 
-instance VectorCoerce4 Float4 where
-  xyz :: Float4 -> Vector3 = xyz4
+instance VectorCoerce4 Float where
+  xyz = xyz4
 
-data ShaderStage = VertexShader | FragmentShader | ComputeShader | GeometryShader |
-  TessellationEvaluationShader | TessellationControlShader
-type VertexShaderProcess = BuiltinVariableSetterM VertexShader
-type FragmentSHaderProcess = BuiltinVariableSetterM FragmentShader
+data ShaderStage = Vertex | Fragment | Compute | Geometry | TessellationEvaluation | TessellationControl
+type VertexShader = ShaderM Vertex
+type FragmentShader = ShaderM Fragment
 
-data VshInputs = VshInputs { position :: Float3, normal :: Float3, uv :: Float2 }
-data ExtVshOutputs = ExtVshOutputs { lambert: Float, uv: Float2 }
+[SpecializedConst 0]
+lightIntensity = 1.0
 
-data CameraSettings = CameraSettings { proj_matrix :: Matrix4 }
+-- syntax sugar for `data A = A { fields... }`
+struct VshInputs where
+  position :: Float3
+  normal :: Float3
+  uv :: Float2
+struct VshOutputs where
+  [Position]
+  position :: Float4
+  lambert :: Float
+  uv :: Float2
 
-vsh_main :: VshInputs -> DescriptorInput [[CameraSettings]] -> VertexShaderProcess ExtVshOutputs
-vsh_main (VshInputs { position, normal, uv }) [[camera]] = do
-  setPosition $ (transpose $ proj_matrix camera) position
-  let lambert = dot ((mat3 $ proj_matrix camera) * normal) $ negate position
-  return $ ExtVshOutputs { lambert = lambert, uv = uv }
+struct CameraSettings where
+  proj_matrix :: Matrix4
 
-fsh_main :: VertexShaderProcess ExtVshOutpus -> DescriptorInput [[Sampler2D]] -> FragmentShaderProcess ()
-fsh_main vsh [[tex]] = let tc = texture2D tex $ uv $ get vsh in do
-  setTargetColor 0 (texture2D tex (uv $ get vsh))
-  setTargetColor $ processColor <$> getTargetColor
-  where
+struct VertexParameters where
+  [DescriptorBound 0 0]
+  camera :: Uniform CameraSettings
+
+[On UseTexture]
+struct FragmentParameters where
+  [DescriptorBound 0 1]
+  tex :: Sampler2D
+
+[Off UseTexture]
+[PushConstant]
+struct FragmentParameters where
+  r :: Float
+  g :: Float
+  b :: Float
+  a :: Float
+
+vsh_main :: VshInputs -> VertexShader VertexParameters VshOutputs
+vsh_main v = do
+  camera <- getParameters >>= _.camera
+  let lambert = dot (mat3 camera.proj_matrix * v.normal) $ negate v.position in
+  pure $ VshOutputs
+    { position = transpose camera.proj_matrix * v.position
+    , lambert = lambert * lightIntensity
+    , uv }
+
+fsh_main :: VshOutpus -> FragmentShader FragmentParameters Float4
+fsh_main vsh = do
+  let
     processColor :: Float4 -> Float4
-    processColor tc = let col_rgb = xyz c * (lambert $ get vsh) in (vec4_fromv3 col_rgb 1.0) * a c
+    processColor tc = let col_rgb = xyz c * vsh.lambert in (vec4_fromv3 col_rgb 1.0) * a c
+  tc <- mainColor >>= newVar
+  modifyVar processColor tc
+  getVar tc
+
+mainColor :: FragmentShader FragmentParameters Float4
+[On UseTexture]
+mainColor = do
+  tex <- getParameters >>= _.tex
+  texture2D tex vsh.uv
+[Off UseTexture]
+mainColor = fmap reconstructColor getParameters where
+  reconstructColor ps = Float4 ps.r ps.g ps.b ps.a
