@@ -234,6 +234,7 @@ impl<'s> Iterator for TokenGenerator<'s> {
 pub struct Lexicalizer<'s> {
     src: &'s str,
     pos: usize,
+    first_lexeme: bool,
     requires_block_opener_layout_marker: bool,
     preceding_whitespaces: Option<usize>,
 }
@@ -243,6 +244,7 @@ impl<'s> Lexicalizer<'s> {
         Lexicalizer {
             src: s,
             pos: 0,
+            first_lexeme: true,
             requires_block_opener_layout_marker: false,
             preceding_whitespaces: None,
         }
@@ -569,7 +571,15 @@ impl<'s> Lexicalizer<'s> {
             Some(c) => return Err(TokenizeError::UnexpectedCharacter(c, self.pos)),
         };
 
-        if insert_block_opener_marker {
+        let first_lexeme = self.first_lexeme;
+        self.first_lexeme = false;
+
+        if first_lexeme && !matches!(t, Token::BlockStart(_) | Token::Keyword(Keyword::Module, _)) {
+            Ok(TokenGenerator::with_preceded_layout_marker(
+                Token::LayoutMarkerBlockOpener(head_span.calc_position().left, head_span),
+                t,
+            ))
+        } else if insert_block_opener_marker {
             // disable next indentation
             self.preceding_whitespaces = None;
             Ok(TokenGenerator::with_preceded_layout_marker(
