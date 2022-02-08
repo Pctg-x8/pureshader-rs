@@ -1,4 +1,4 @@
-use crate::lexicalizer::{Span, Token, TokenizeError};
+use crate::lexicalizer::{Keyword, Span, Token, TokenizeError};
 
 pub enum ParseError {
     Tokenize(TokenizeError),
@@ -212,7 +212,7 @@ impl<'s> ImportDecl<'s> {
     pub fn parse(state: &mut ParserState<'_, 's>) -> ParseResult<Self> {
         if !matches!(
             state.head().ok_or(ParseError::UnexpectedEndToken)?,
-            Token::Import(_)
+            Token::Keyword(Keyword::Import, _)
         ) {
             state.update_max_pos();
             return Err(ParseError::UnexpectedToken(state.pos));
@@ -224,7 +224,7 @@ impl<'s> ImportDecl<'s> {
         }
 
         let qualified = match state.head() {
-            Some(Token::Qualified(_)) => {
+            Some(Token::Keyword(Keyword::Qualified, _)) => {
                 state.consume();
                 true
             }
@@ -242,7 +242,7 @@ impl<'s> ImportDecl<'s> {
         }
 
         let as_name = match state.head() {
-            Some(Token::As(_)) => {
+            Some(Token::Keyword(Keyword::As, _)) => {
                 state.consume();
 
                 while matches!(state.head(), Some(Token::Punct(_))) {
@@ -259,7 +259,7 @@ impl<'s> ImportDecl<'s> {
         }
 
         let hiding = match state.head() {
-            Some(Token::Hiding(_)) => {
+            Some(Token::Keyword(Keyword::Hiding, _)) => {
                 state.consume();
                 true
             }
