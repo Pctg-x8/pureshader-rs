@@ -571,10 +571,10 @@ impl<'s> Lexicalizer<'s> {
             Some(c) => return Err(TokenizeError::UnexpectedCharacter(c, self.pos)),
         };
 
-        let first_lexeme = self.first_lexeme;
+        let is_first_lexeme = self.first_lexeme;
         self.first_lexeme = false;
 
-        if first_lexeme && !matches!(t, Token::BlockStart(_) | Token::Keyword(Keyword::Module, _)) {
+        if is_first_lexeme && !matches!(t, Token::BlockStart(_) | Token::Keyword(Keyword::Module, _)) {
             Ok(TokenGenerator::with_preceded_layout_marker(
                 Token::LayoutMarkerBlockOpener(head_span.calc_position().left, head_span),
                 t,

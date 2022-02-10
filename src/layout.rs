@@ -10,10 +10,15 @@ pub enum Layout {
     Implicit(usize),
 }
 
+#[derive(Clone)]
 pub struct LayoutContext {
     stack: Vec<Layout>,
 }
 impl LayoutContext {
+    pub fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+
     pub fn current(&self) -> Option<Layout> {
         self.stack.last().copied()
     }
