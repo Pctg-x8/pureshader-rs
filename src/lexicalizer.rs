@@ -74,6 +74,7 @@ impl std::fmt::Debug for Span<'_> {
 pub enum Keyword {
     Module,
     Import,
+    Export,
     Hiding,
     Foreign,
     Type,
@@ -317,7 +318,7 @@ impl<'s> Lexicalizer<'s> {
                 let has_linefeed = sp.as_str().contains('\n');
                 let t = Token::Punct(sp);
                 self.pos += b;
-                self.preceding_whitespaces = Some(indent_level).filter(|&v| v > 0 && has_linefeed);
+                self.preceding_whitespaces = Some(indent_level).filter(|&v| has_linefeed);
 
                 // early return (ignoring layout)
                 return Ok(TokenGenerator::new(t));
@@ -489,7 +490,7 @@ impl<'s> Lexicalizer<'s> {
                     .chars()
                     .take_while(|&c| OPCHARACTERS.iter().any(|&a| a == c))
                     .fold(0, |a, c| a + c.len_utf8());
-                let t = match &self.src[..b] {
+                let t = match &self.src[self.pos..self.pos + b] {
                     "=" => Token::Equal(self.spanize(1)),
                     "::" => Token::Typing(self.spanize(2)),
                     "->" => Token::Arrow(self.spanize(2)),
@@ -516,6 +517,7 @@ impl<'s> Lexicalizer<'s> {
                 let kw = match &self.src[self.pos..self.pos + b] {
                     "module" => Some(Keyword::Module),
                     "import" => Some(Keyword::Import),
+                    "export" => Some(Keyword::Export),
                     "hiding" => Some(Keyword::Hiding),
                     "qualified" => Some(Keyword::Qualified),
                     "as" => Some(Keyword::As),
@@ -574,7 +576,9 @@ impl<'s> Lexicalizer<'s> {
         let is_first_lexeme = self.first_lexeme;
         self.first_lexeme = false;
 
-        if is_first_lexeme && !matches!(t, Token::BlockStart(_) | Token::Keyword(Keyword::Module, _)) {
+        if is_first_lexeme
+            && !matches!(t, Token::BlockStart(_) | Token::Keyword(Keyword::Module, _))
+        {
             Ok(TokenGenerator::with_preceded_layout_marker(
                 Token::LayoutMarkerBlockOpener(head_span.calc_position().left, head_span),
                 t,

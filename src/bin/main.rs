@@ -9,6 +9,7 @@ fn main() {
         Ok(t) => t,
         Err(e) => panic!("TokenizerError: {e:?} ({:?})", e.calc_position(&c)),
     };
+    println!("{tokens:?}");
 
     let mut ps = pureshader_rs::parser::ParserState::new(&tokens);
     ps.skip_puncts();
