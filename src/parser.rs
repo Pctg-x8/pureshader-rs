@@ -793,10 +793,6 @@ impl<'s> SimpleType<'s> {
         loop {
             state.skip_puncts();
 
-            if state.try_separate().is_ok() {
-                break;
-            }
-
             if let Some(Token::SmallStartIdentifier(s)) = state.tokens.head() {
                 state.tokens.consume();
                 vars.push(s.clone());
