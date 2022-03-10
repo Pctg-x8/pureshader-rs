@@ -119,6 +119,16 @@ impl Keyword {
 }
 
 #[derive(Debug, Clone)]
+pub struct NumberLiteral<'s> {
+    ipart: Span<'s>,
+    fpart: Option<Span<'s>>,
+    epart: Option<Span<'s>>,
+    float_ty: bool,
+    unsigned_ty: bool,
+    long_ty: bool,
+}
+
+#[derive(Debug, Clone)]
 pub enum Token<'s> {
     Punct(Span<'s>),
     /// {n}
@@ -128,14 +138,7 @@ pub enum Token<'s> {
     LargeStartIdentifier(Span<'s>),
     SmallStartIdentifier(Span<'s>),
     StringLiteral(Span<'s>),
-    NumberLiteral {
-        ipart: Span<'s>,
-        fpart: Option<Span<'s>>,
-        epart: Option<Span<'s>>,
-        float_ty: bool,
-        unsigned_ty: bool,
-        long_ty: bool,
-    },
+    NumberLiteral(NumberLiteral<'s>),
     LeftParenthese(Span<'s>),
     RightParenthese(Span<'s>),
     LeftBracket(Span<'s>),
@@ -151,12 +154,13 @@ pub enum Token<'s> {
     Arrow(Span<'s>),
     FatArrow(Span<'s>),
     Backslash(Span<'s>),
+    At(Span<'s>),
     Keyword(Keyword, Span<'s>),
 }
 impl Token<'_> {
     pub fn head_span(&self) -> &Span {
         match self {
-            Self::NumberLiteral { ipart, .. } => ipart,
+            Self::NumberLiteral(NumberLiteral { ipart, .. }) => ipart,
             Self::Punct(s)
             | Self::LayoutMarkerBlockOpener(_, s)
             | Self::LayoutMarkerIndentation(_, s)
@@ -178,6 +182,7 @@ impl Token<'_> {
             | Self::Arrow(s)
             | Self::FatArrow(s)
             | Self::Backslash(s)
+            | Self::At(s)
             | Self::Keyword(_, s) => s,
         }
     }
@@ -395,6 +400,13 @@ impl<'s> Lexicalizer<'s> {
 
                 t
             }
+            Some('@') => {
+                let t = Token::At(self.spanize(1));
+                self.pos += 1;
+                self.requires_block_opener_layout_marker = false;
+
+                t
+            }
             Some(c) if ('0'..='9').contains(&c) => {
                 let ipart_b = self.src[self.pos..]
                     .chars()
@@ -452,7 +464,7 @@ impl<'s> Lexicalizer<'s> {
                     }
                 }
 
-                let t = Token::NumberLiteral {
+                let t = Token::NumberLiteral(NumberLiteral {
                     ipart: Span {
                         source: self.src,
                         pos: self.pos,
@@ -479,7 +491,7 @@ impl<'s> Lexicalizer<'s> {
                     float_ty,
                     long_ty,
                     unsigned_ty,
-                };
+                });
                 self.pos += suffixpart_start + suffixpart_b;
                 self.requires_block_opener_layout_marker = false;
 

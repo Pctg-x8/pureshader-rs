@@ -1,6 +1,6 @@
 use crate::{
     layout::{Layout, LayoutContext},
-    lexicalizer::{Keyword, Span, Token, TokenizeError},
+    lexicalizer::{Keyword, NumberLiteral, Span, Token, TokenizeError},
 };
 
 #[derive(Debug)]
@@ -201,6 +201,407 @@ fn parse_modid<'s>(state: &mut ParserState<'_, 's>) -> ParseResult<Vec<Span<'s>>
             _ => {
                 state.tokens.update_max_pos();
                 return Err(ParseError::UnexpectedToken(state.tokens.pos));
+            }
+        }
+    }
+}
+
+fn parse_qconid<'s>(state: &mut ParserState<'_, 's>) -> ParseResult<Vec<Span<'s>>> {
+    let mut tok = match state.tokens.head().ok_or(ParseError::UnexpectedEndToken)? {
+        Token::LargeStartIdentifier(s) => {
+            state.tokens.consume();
+            vec![s.clone()]
+        }
+        _ => {
+            state.tokens.update_max_pos();
+            return Err(ParseError::UnexpectedToken(state.tokens.pos));
+        }
+    };
+
+    loop {
+        match state.tokens.head() {
+            Some(Token::Op(s)) if s.as_str() == "." => state.tokens.consume(),
+            _ => break Ok(tok),
+        };
+
+        match state.tokens.head().ok_or(ParseError::UnexpectedEndToken)? {
+            Token::LargeStartIdentifier(s) => {
+                state.tokens.consume();
+                tok.push(s.clone());
+            }
+            _ => {
+                state.tokens.update_max_pos();
+                return Err(ParseError::UnexpectedToken(state.tokens.pos));
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct QualifiedConSym<'s> {
+    modpath: Vec<Span<'s>>,
+    sym: Span<'s>,
+}
+impl<'s> QualifiedConSym<'s> {
+    pub fn parse(state: &mut ParserState<'_, 's>) -> ParseResult<Self> {
+        let modpath = if let Token::LargeStartIdentifier(s) =
+            state.tokens.head().ok_or(ParseError::UnexpectedEndToken)?
+        {
+            state.tokens.consume();
+            let mut modpath = vec![s.clone()];
+
+            loop {
+                match state.tokens.head() {
+                    Some(Token::Op(s)) if s.as_str() == "." => state.tokens.consume(),
+                    _ => break modpath,
+                };
+
+                match state.tokens.head().ok_or(ParseError::UnexpectedEndToken)? {
+                    Token::LargeStartIdentifier(s) => {
+                        state.tokens.consume();
+                        modpath.push(s.clone());
+                    }
+                    _ => {
+                        state.tokens.update_max_pos();
+                        return Err(ParseError::UnexpectedToken(state.tokens.pos));
+                    }
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        let sym = match state.tokens.head().ok_or(ParseError::UnexpectedEndToken)? {
+            Token::Op(s) if s.as_str().starts_with(':') => {
+                state.tokens.consume();
+                s.clone()
+            }
+            _ => {
+                state.tokens.update_max_pos();
+
+                return Err(ParseError::UnexpectedToken(state.tokens.pos));
+            }
+        };
+
+        Ok(Self { modpath, sym })
+    }
+}
+
+#[derive(Debug)]
+pub enum ConstructorPattern<'s> {
+    Unit(Span<'s>),
+    List(Span<'s>),
+    Tuple(Span<'s>, usize),
+    QualifiedId(Vec<Span<'s>>),
+    QualifiedSym(QualifiedConSym<'s>),
+    Cons(Span<'s>),
+}
+#[derive(Debug)]
+pub enum InfixConstructorPattern<'s> {
+    Cons(Span<'s>),
+    QualifiedSym(QualifiedConSym<'s>),
+    QualifiedId(Vec<Span<'s>>),
+}
+#[derive(Debug)]
+pub enum Pattern<'s> {
+    Infix(
+        Box<Pattern<'s>>,
+        InfixConstructorPattern<'s>,
+        Box<Pattern<'s>>,
+    ),
+    NegativeLiteral(NumberLiteral<'s>),
+    Arity(ConstructorPattern<'s>, Vec<Pattern<'s>>),
+    As(Span<'s>, Box<Pattern<'s>>),
+    Labelled(Vec<Span<'s>>, Vec<(Vec<Span<'s>>, Pattern<'s>)>),
+    Var(Span<'s>),
+    NumberLiteral(NumberLiteral<'s>),
+    StringLiteral(Span<'s>),
+    Tuple(Vec<Pattern<'s>>),
+    List(Vec<Pattern<'s>>),
+    Irrefutable(Box<Pattern<'s>>),
+}
+impl<'s> Pattern<'s> {
+    pub fn parse(state: &mut ParserState<'_, 's>) -> ParseResult<Self> {
+        let lhs = Self::parse_lhs(state)?;
+
+        state.skip_puncts();
+        match state.tokens.head() {
+            Some(Token::Op(s)) if s.as_str() == ":" => {
+                state.tokens.consume();
+                state.skip_puncts();
+
+                Self::parse(state).map(|rhs| {
+                    Self::Infix(
+                        Box::new(lhs),
+                        InfixConstructorPattern::Cons(s.clone()),
+                        Box::new(rhs),
+                    )
+                })
+            }
+            Some(Token::Backquote(_)) => {
+                state.tokens.consume();
+                let id = parse_qconid(state)?;
+                if !matches!(
+                    state.tokens.head().ok_or(ParseError::UnexpectedEndToken)?,
+                    Token::Backquote(_)
+                ) {
+                    state.tokens.update_max_pos();
+
+                    return Err(ParseError::UnexpectedToken(state.tokens.pos));
+                }
+                state.tokens.consume();
+
+                state.skip_puncts();
+
+                Self::parse(state).map(|rhs| {
+                    Self::Infix(
+                        Box::new(lhs),
+                        InfixConstructorPattern::QualifiedId(id),
+                        Box::new(rhs),
+                    )
+                })
+            }
+            _ => {
+                let saved = state.tokens.branch();
+
+                let consym = match QualifiedConSym::parse(state) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        state.tokens.unwind(saved);
+                        return Ok(lhs);
+                    }
+                };
+                state.skip_puncts();
+
+                Self::parse(state).map(|rhs| {
+                    Self::Infix(
+                        Box::new(lhs),
+                        InfixConstructorPattern::QualifiedSym(consym),
+                        Box::new(rhs),
+                    )
+                })
+            }
+        }
+    }
+
+    fn parse_lhs(state: &mut ParserState<'_, 's>) -> ParseResult<Self> {
+        match state.tokens.head().ok_or(ParseError::UnexpectedEndToken)? {
+            Token::Op(s) if s.as_str() == "-" => {
+                state.tokens.consume();
+                state.skip_puncts();
+
+                match state.tokens.head().ok_or(ParseError::UnexpectedEndToken)? {
+                    Token::NumberLiteral(n) => {
+                        state.tokens.consume();
+
+                        Ok(Self::NegativeLiteral(n.clone()))
+                    }
+                    _ => {
+                        state.tokens.update_max_pos();
+
+                        Err(ParseError::UnexpectedToken(state.tokens.pos))
+                    }
+                }
+            }
+            _ => Self::parse_factor(state),
+        }
+    }
+
+    fn parse_factor(state: &mut ParserState<'_, 's>) -> ParseResult<Self> {
+        match state.tokens.head().ok_or(ParseError::UnexpectedEndToken)? {
+            Token::SmallStartIdentifier(v) => {
+                state.tokens.consume();
+                state.skip_puncts();
+
+                if matches!(state.tokens.head(), Some(Token::At(_))) {
+                    // at pattern
+
+                    state.tokens.consume();
+                    state.skip_puncts();
+
+                    Self::parse_factor(state).map(|a| Self::As(v.clone(), Box::new(a)))
+                } else {
+                    Ok(Self::Var(v.clone()))
+                }
+            }
+            Token::LeftParenthese(s0) => {
+                state.tokens.consume();
+
+                match state.tokens.head().ok_or(ParseError::UnexpectedEndToken)? {
+                    Token::Op(s) => {
+                        state.tokens.consume();
+                        if !matches!(
+                            state.tokens.head().ok_or(ParseError::UnexpectedEndToken)?,
+                            Token::RightParenthese(_)
+                        ) {
+                            state.tokens.update_max_pos();
+
+                            return Err(ParseError::UnexpectedToken(state.tokens.pos));
+                        }
+                        state.tokens.consume();
+                        state.skip_puncts();
+
+                        if matches!(state.tokens.head(), Some(Token::At(_))) {
+                            // at pattern
+
+                            state.tokens.consume();
+                            state.skip_puncts();
+
+                            Self::parse_factor(state).map(|a| Self::As(s.clone(), Box::new(a)))
+                        } else {
+                            Ok(Self::Var(s.clone()))
+                        }
+                    }
+                    Token::RightParenthese(_) => {
+                        state.tokens.consume();
+
+                        Ok(Self::Arity(
+                            ConstructorPattern::Unit(s0.clone()),
+                            Vec::new(),
+                        ))
+                    }
+                    Token::Comma(_) => {
+                        state.tokens.consume();
+                        let mut counter = 1;
+                        while matches!(state.tokens.head(), Some(Token::Comma(_))) {
+                            state.tokens.consume();
+                            counter += 1;
+                        }
+
+                        if !matches!(
+                            state.tokens.head().ok_or(ParseError::UnexpectedEndToken)?,
+                            Token::RightParenthese(_)
+                        ) {
+                            state.tokens.update_max_pos();
+
+                            return Err(ParseError::UnexpectedToken(state.tokens.pos));
+                        }
+                        state.tokens.consume();
+
+                        // applications
+                        let mut args = Vec::new();
+                        loop {
+                            state.skip_puncts();
+
+                            let saved = state.tokens.branch();
+                            match Self::parse_factor(state) {
+                                Ok(a) => args.push(a),
+                                Err(_) => {
+                                    state.tokens.unwind(saved);
+                                    break;
+                                }
+                            }
+                        }
+
+                        Ok(Self::Arity(
+                            ConstructorPattern::Tuple(s0.clone(), counter),
+                            args,
+                        ))
+                    }
+                    _ => {
+                        state.skip_puncts();
+                        let mut tuple_elements = vec![Self::parse(state)?];
+
+                        loop {
+                            state.skip_puncts();
+
+                            if !matches!(state.tokens.head(), Some(Token::Comma(_))) {
+                                break;
+                            }
+                            state.tokens.consume();
+                            state.skip_puncts();
+
+                            tuple_elements.push(Self::parse(state)?);
+                        }
+
+                        if !matches!(
+                            state.tokens.head().ok_or(ParseError::UnexpectedEndToken)?,
+                            Token::RightParenthese(_)
+                        ) {
+                            state.tokens.update_max_pos();
+
+                            return Err(ParseError::UnexpectedToken(state.tokens.pos));
+                        }
+                        state.tokens.consume();
+
+                        if tuple_elements.len() == 1 {
+                            Ok(tuple_elements.pop().unwrap())
+                        } else {
+                            Ok(Self::Tuple(tuple_elements))
+                        }
+                    }
+                }
+            }
+            Token::NumberLiteral(n) => {
+                state.tokens.consume();
+
+                Ok(Self::NumberLiteral(n.clone()))
+            }
+            Token::StringLiteral(s) => {
+                state.tokens.consume();
+
+                Ok(Self::StringLiteral(s.clone()))
+            }
+            Token::LeftBracket(_) => {
+                state.tokens.consume();
+                state.skip_puncts();
+                let mut elements = vec![Self::parse(state)?];
+
+                loop {
+                    state.skip_puncts();
+
+                    if !matches!(state.tokens.head(), Some(Token::Comma(_))) {
+                        break;
+                    }
+                    state.tokens.consume();
+                    state.skip_puncts();
+
+                    elements.push(Self::parse(state)?);
+                }
+
+                if !matches!(
+                    state.tokens.head().ok_or(ParseError::UnexpectedEndToken)?,
+                    Token::RightBracket(_)
+                ) {
+                    state.tokens.update_max_pos();
+
+                    return Err(ParseError::UnexpectedToken(state.tokens.pos));
+                }
+                state.tokens.consume();
+
+                Ok(Self::List(elements))
+            }
+            Token::Op(s) if s.as_str() == "~" => {
+                state.tokens.consume();
+                state.skip_puncts();
+
+                Self::parse_factor(state).map(|b| Self::Irrefutable(Box::new(b)))
+            }
+            _ => {
+                let ctor = parse_qconid(state)?;
+                state.skip_puncts();
+
+                if matches!(state.tokens.head(), Some(Token::BlockStart(_))) {
+                    // labelled
+                    todo!("labelled pattern");
+                } else {
+                    // applications
+                    let mut args = Vec::new();
+                    loop {
+                        state.skip_puncts();
+
+                        let saved = state.tokens.branch();
+                        match Self::parse_factor(state) {
+                            Ok(a) => args.push(a),
+                            Err(_) => {
+                                state.tokens.unwind(saved);
+                                break;
+                            }
+                        }
+                    }
+
+                    Ok(Self::Arity(ConstructorPattern::QualifiedId(ctor), args))
+                }
             }
         }
     }
